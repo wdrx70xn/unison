@@ -1,54 +1,49 @@
 name: Nix development cache
-
 concurrency:
   group: nix-dev-cache-${{ github.ref_name }}
   cancel-in-progress: true
-
-on:
+'on':
   push:
     branches:
-      # Cache trunk, to keep recent builds in the cache for development.
-      - trunk
+    - trunk
     tags:
-      # Cache releases, so they can be pinned in the cache for downstream consumers of Unison.
-      - 'release/**'
-  # Allow manual caching of branches. This is particularly useful when upgrading the Nix tooling, as we can test the PR
-  # and ensure that the cache is populated before merging into trunk.
-  workflow_dispatch:
-
+    - release/**
+  workflow_dispatch: null
 jobs:
   nix:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # Run each build to completion, regardless of if any have failed
       fail-fast: false
       matrix:
         os:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - macos-15-intel
-          - macos-latest
+        - ubuntu-24.04
+        - ubuntu-latest
+        - macos-15-intel
+        - macos-latest
     steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
     - name: mount Nix store on larger partition
-      # on the Linux runner `/` doesn't have enough space, but there's a `/mnt` which does.
       if: runner.os == 'Linux'
-      run: |
-        sudo mkdir /nix /mnt/nix
+      run: 'sudo mkdir /nix /mnt/nix
+
         sudo mount --bind /mnt/nix /nix
-    - uses: cachix/install-nix-action@9280e7aca88deada44c930f1e2c78e21c3ae3edd # v31.7
+
+        '
+    - uses: cachix/install-nix-action@9280e7aca88deada44c930f1e2c78e21c3ae3edd
       if: runner.os == 'Linux'
       with:
-        extra_nix_config: |
-          extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+        extra_nix_config: 'extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
+
           extra-substituters = https://cache.iog.io
-    - uses: cachix/install-nix-action@9280e7aca88deada44c930f1e2c78e21c3ae3edd # v31.7
+
+          '
+    - uses: cachix/install-nix-action@9280e7aca88deada44c930f1e2c78e21c3ae3edd
       if: runner.os != 'Linux'
-    - uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+    - uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc
       with:
         name: unison
-        authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
     - name: build all packages and development shells
       run: nix -L build --accept-flake-config --no-link --keep-going '.#all'
     - name: print disk free status
