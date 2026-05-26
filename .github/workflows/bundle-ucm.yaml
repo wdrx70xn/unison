@@ -1,20 +1,14 @@
 name: bundle ucm
-
-# build optimized ucm
-# build/dist unison-runtime
-
-on:
+'on':
   workflow_call:
     inputs:
       ref:
         description: Git ref to check out for this build, e.g. `trunk` or `release/0.5.19`
         type: string
         required: true
-
 defaults:
   run:
     shell: bash
-
 jobs:
   build-ucm:
     name: build ucm
@@ -22,146 +16,127 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - macos-15-intel
-          - macos-latest
-          - windows-2025
-          # - windows-11-arm # 2025-06-17 apparently there's no stack or ghc builds for arm64 windows
+        - ubuntu-24.04
+        - ubuntu-latest
+        - macos-15-intel
+        - macos-latest
+        - windows-2025
     runs-on: ${{matrix.os}}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          ref: ${{inputs.ref}}
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{inputs.ref}}
+    - name: restore stack caches
+      uses: unisonweb/actions/stack/cache/restore@main
+      with:
+        cache-prefix: release
+    - name: install stack
+      uses: unisonweb/actions/stack/install@main
+      with:
+        stack-version: 3.7.1
+    - name: build
+      run: "# unison-cli-main embeds version numbers using TH\n# so it needs to be\
+        \ forced to rebuild to ensure those are updated.\nstack clean unison-cli-main\n\
+        \nmkdir ucm-bin\n\n# Windows will crash on build intermittently because the\
+        \ filesystem\n# sucks at managing concurrent file access;\n# Just keep retrying\
+        \ on these failures.\ntries=5\nfor (( i = 0; i < $tries; i++ )); do\n    stack\
+        \ build --only-dependencies && break\ndone\n\nstack build :unison \\\n   \
+        \   --ghc-options='-O2' \\\n      --local-bin-path ucm-bin \\\n      --copy-bins\n\
+        \nif [[ ${{runner.os}} = 'Windows' ]]; then\n  ucm=$(stack exec where unison)\n\
+        else\n  ucm=$(stack exec which unison)\nfi\necho ucm=\"$ucm\" >> $GITHUB_ENV\n\
+        ls -l $ucm\n"
+    - name: save stack caches
+      uses: unisonweb/actions/stack/cache/save@main
+      with:
+        cache-prefix: release
+    - name: upload ucm
+      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1
+      with:
+        name: unison-${{matrix.os}}
+        path: ${{ env.ucm }}
+        if-no-files-found: error
+    - name: report errors
+      if: github.ref == 'refs/heads/trunk' && failure()
+      uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d
+      with:
+        webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+        webhook-type: incoming-webhook
+        payload: 'text: "build-ucm failed on ${{ github.ref }}. See details: ${{ github.server_url
+          }}/${{ github.repository }}/actions/runs/${{ github.run_id }} cc <@UF924D5S7>"
 
-      - name: restore stack caches
-        uses: unisonweb/actions/stack/cache/restore@main
-        with:
-          cache-prefix: release
-
-      - name: install stack
-        uses: unisonweb/actions/stack/install@main
-        with:
-          stack-version: 3.7.1
-
-      - name: build
-        run: |
-          # unison-cli-main embeds version numbers using TH
-          # so it needs to be forced to rebuild to ensure those are updated.
-          stack clean unison-cli-main
-
-          mkdir ucm-bin
-
-          # Windows will crash on build intermittently because the filesystem
-          # sucks at managing concurrent file access;
-          # Just keep retrying on these failures.
-          tries=5
-          for (( i = 0; i < $tries; i++ )); do
-              stack build --only-dependencies && break
-          done
-
-          stack build :unison \
-                --ghc-options='-O2' \
-                --local-bin-path ucm-bin \
-                --copy-bins
-
-          if [[ ${{runner.os}} = 'Windows' ]]; then
-            ucm=$(stack exec where unison)
-          else
-            ucm=$(stack exec which unison)
-          fi
-          echo ucm="$ucm" >> $GITHUB_ENV
-          ls -l $ucm
-
-      - name: save stack caches
-        uses: unisonweb/actions/stack/cache/save@main
-        with:
-          cache-prefix: release
-
-      - name: upload ucm
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
-        with:
-          name: unison-${{matrix.os}}
-          path: ${{ env.ucm }}
-          if-no-files-found: error
-
-      - name: report errors
-        if: github.ref == 'refs/heads/trunk' && failure()
-        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # https://github.com/slackapi/slack-github-action/releases/tag/v2.0.0
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-              text: "build-ucm failed on ${{ github.ref }}. See details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} cc <@UF924D5S7>"
-
+          '
   bundle:
     name: bundle ucm and ui
-    needs: [build-ucm]
+    needs:
+    - build-ucm
     runs-on: ${{matrix.os}}
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - macos-15-intel
-          - macos-latest
-          - windows-2025
-          # - windows-11-arm
+        - ubuntu-24.04
+        - ubuntu-latest
+        - macos-15-intel
+        - macos-latest
+        - windows-2025
     steps:
-      - name: set up environment
-        run: |
-          staging_dir="${RUNNER_TEMP//\\//}/ucm-staging"
-          artifact_os="$(echo "${RUNNER_OS}-${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
-          echo "staging_dir=$staging_dir" >> $GITHUB_ENV
-          echo "artifact_os=$artifact_os" >> $GITHUB_ENV
-      - name: download ucm
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
-        with:
-          name: unison-${{matrix.os}}
-          path: ${{env.staging_dir}}/unison/
-      - name: restore permissions on ucm
-        run: chmod +x ${{env.staging_dir}}/unison/unison
-      - name: download latest unison-local-ui
-        run: |
-          curl -L -o /tmp/unisonLocal.zip \
-            https://github.com/unisonweb/unison-local-ui/releases/download/latest/unisonLocal.zip
-          unzip -d ${{env.staging_dir}}/ui /tmp/unisonLocal.zip
-      - name: create startup script (non-Windows)
-        if: runner.os != 'Windows'
-        uses: 1arp/create-a-file-action@29bab1af4675373aad48a2157c09f1917f85f008 # 0.4.4
-        with:
-          path: ${{env.staging_dir}}
-          file: ucm
-          content: |
-            #!/bin/bash
-            unison_root="$(dirname "$(readlink -f "$0")")"
-            export UCM_WEB_UI="${unison_root}/ui"
-            "${unison_root}/unison/unison" "$@"
-      - name: create startup script (Windows)
-        if: runner.os == 'Windows'
-        uses: 1arp/create-a-file-action@29bab1af4675373aad48a2157c09f1917f85f008 # 0.4.4
-        with:
-          path: ${{env.staging_dir}}
-          file: ucm.cmd
-          content: |
-            @echo off
-            SET UCM_WEB_UI=%~dp0ui
-            "%~dp0unison\unison.exe" %*
-      - name: package everything together
-        run: |
-          if [[ ${{runner.os}} = 'Windows' ]]; then
-            artifact_archive=ucm-${{env.artifact_os}}.zip
-            7z a -r -tzip ${artifact_archive} ${{env.staging_dir}}/*
-          else
-            chmod +x ${{env.staging_dir}}/ucm
-            artifact_archive=ucm-${{env.artifact_os}}.tar.gz
-            tar -c -z -f ${artifact_archive} -C ${{env.staging_dir}} .
-          fi
-          echo "artifact_archive=${artifact_archive}" >> $GITHUB_ENV
-      - name: upload artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
-        with:
-          name: bundle-${{env.artifact_os}}
-          path: ${{env.artifact_archive}}
-          if-no-files-found: error
+    - name: set up environment
+      run: 'staging_dir="${RUNNER_TEMP//\\//}/ucm-staging"
+
+        artifact_os="$(echo "${RUNNER_OS}-${RUNNER_ARCH}" | tr ''[:upper:]'' ''[:lower:]'')"
+
+        echo "staging_dir=$staging_dir" >> $GITHUB_ENV
+
+        echo "artifact_os=$artifact_os" >> $GITHUB_ENV
+
+        '
+    - name: download ucm
+      uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806
+      with:
+        name: unison-${{matrix.os}}
+        path: ${{env.staging_dir}}/unison/
+    - name: restore permissions on ucm
+      run: chmod +x ${{env.staging_dir}}/unison/unison
+    - name: download latest unison-local-ui
+      run: "curl -L -o /tmp/unisonLocal.zip \\\n  https://github.com/unisonweb/unison-local-ui/releases/download/latest/unisonLocal.zip\n\
+        unzip -d ${{env.staging_dir}}/ui /tmp/unisonLocal.zip\n"
+    - name: create startup script (non-Windows)
+      if: runner.os != 'Windows'
+      uses: 1arp/create-a-file-action@29bab1af4675373aad48a2157c09f1917f85f008
+      with:
+        path: ${{env.staging_dir}}
+        file: ucm
+        content: '#!/bin/bash
+
+          unison_root="$(dirname "$(readlink -f "$0")")"
+
+          export UCM_WEB_UI="${unison_root}/ui"
+
+          "${unison_root}/unison/unison" "$@"
+
+          '
+    - name: create startup script (Windows)
+      if: runner.os == 'Windows'
+      uses: 1arp/create-a-file-action@29bab1af4675373aad48a2157c09f1917f85f008
+      with:
+        path: ${{env.staging_dir}}
+        file: ucm.cmd
+        content: '@echo off
+
+          SET UCM_WEB_UI=%~dp0ui
+
+          "%~dp0unison\unison.exe" %*
+
+          '
+    - name: package everything together
+      run: "if [[ ${{runner.os}} = 'Windows' ]]; then\n  artifact_archive=ucm-${{env.artifact_os}}.zip\n\
+        \  7z a -r -tzip ${artifact_archive} ${{env.staging_dir}}/*\nelse\n  chmod\
+        \ +x ${{env.staging_dir}}/ucm\n  artifact_archive=ucm-${{env.artifact_os}}.tar.gz\n\
+        \  tar -c -z -f ${artifact_archive} -C ${{env.staging_dir}} .\nfi\necho \"\
+        artifact_archive=${artifact_archive}\" >> $GITHUB_ENV\n"
+    - name: upload artifact
+      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1
+      with:
+        name: bundle-${{env.artifact_os}}
+        path: ${{env.artifact_archive}}
+        if-no-files-found: error
